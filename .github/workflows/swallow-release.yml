@@ -1,0 +1,100 @@
+name: swallow-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      security_revision:
+        description: Approved security revision (for example r1)
+        required: true
+        default: r1
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: katsarosi
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    environment: release
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - name: Require an approved secure branch
+        run: |
+          case "$GITHUB_REF_NAME" in secure/*) ;; *) echo "release must target secure/*" >&2; exit 1;; esac
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4.1.0
+        with:
+          version: 10.16.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: cd apps/api && pnpm install --frozen-lockfile
+      - run: cd apps/playwright-service-ts && pnpm install --frozen-lockfile
+      - run: scripts/swallow-security-check.sh
+      - id: version
+        run: echo "value=v2.11.0-swallow-${{ inputs.security_revision }}-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+  publish-api:
+    needs: verify
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.18.0
+        with:
+          context: apps/api
+          file: apps/api/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/katsarosi/firecrawl:${{ needs.verify.outputs.version }}
+      - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2.4.0
+        with:
+          subject-name: ghcr.io/katsarosi/firecrawl
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - run: echo "ghcr.io/katsarosi/firecrawl@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+  publish-playwright:
+    needs: verify
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.18.0
+        with:
+          context: apps/playwright-service-ts
+          file: apps/playwright-service-ts/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/katsarosi/playwright-service:${{ needs.verify.outputs.version }}
+      - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2.4.0
+        with:
+          subject-name: ghcr.io/katsarosi/playwright-service
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - run: echo "ghcr.io/katsarosi/playwright-service@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

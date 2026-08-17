@@ -1,5 +1,7 @@
-import * as undici from "undici";
-import { getSecureDispatcher } from "../scraper/scrapeURL/engines/utils/safeFetch";
+import {
+  getSecureDispatcher,
+  secureFetch,
+} from "../scraper/scrapeURL/engines/utils/safeFetch";
 
 export const protocolIncluded = (url: string) => {
   // if :// not in the start of the url assume http (maybe https?)
@@ -207,9 +209,8 @@ export async function resolveRedirects(
       : AbortSignal.timeout(2000);
 
     try {
-      const response = await undici.fetch(targetUrl, {
+      const response = await secureFetch(targetUrl, {
         method,
-        redirect: "follow",
         dispatcher: getSecureDispatcher(false),
         signal,
       });

@@ -3,8 +3,14 @@ import { chromium, Browser, BrowserContext, Route, Request as PlaywrightRequest,
 import dotenv from 'dotenv';
 import UserAgent from 'user-agents';
 import { getError } from './helpers/get_error';
-import { lookup } from 'dns/promises';
-import IPAddr from 'ipaddr.js';
+import {
+  browserProxy,
+  chromiumSecurityArguments,
+  InsecureConnectionError,
+  NavigationPolicy,
+  parseSafeDestination,
+  SecureEgressProxy,
+} from './network-security';
 
 dotenv.config();
 
@@ -15,105 +21,16 @@ app.use(express.json());
 
 const BLOCK_MEDIA = (process.env.BLOCK_MEDIA || 'False').toUpperCase() === 'TRUE';
 const MAX_CONCURRENT_PAGES = Math.max(1, Number.parseInt(process.env.MAX_CONCURRENT_PAGES ?? '10', 10) || 10);
-const ALLOW_LOCAL_WEBHOOKS = (process.env.ALLOW_LOCAL_WEBHOOKS || 'False').toUpperCase() === 'TRUE';
-const DNS_CACHE_TTL_MS = 30_000;
-
-const PROXY_SERVER = process.env.PROXY_SERVER || null;
-const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
-const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
-const dnsLookupCache = new Map<string, { addresses: string[]; expiresAt: number }>();
-
-class InsecureConnectionError extends Error {
-  constructor(public readonly blockedUrl: string, reason: string) {
-    super(`Blocked insecure target URL "${blockedUrl}": ${reason}`);
-    this.name = 'InsecureConnectionError';
-  }
+if (process.env.PROXY_SERVER || process.env.PROXY_USERNAME || process.env.PROXY_PASSWORD) {
+  throw new Error('External browser proxies are disabled by the Swallow security patch.');
 }
 
 const normalizeHostname = (hostname: string): string => hostname.toLowerCase().replace(/\.$/, '');
-
-const isHttpProtocol = (protocol: string): boolean => protocol === 'http:' || protocol === 'https:';
-
-const isIPPrivate = (address: string): boolean => {
-  if (!IPAddr.isValid(address)) return false;
-  const parsedAddress = IPAddr.parse(address);
-  return parsedAddress.range() !== 'unicast';
-};
-
-const isLocalHostname = (hostname: string): boolean =>
-  hostname === 'localhost' || hostname.endsWith('.localhost');
-
-const lookupWithCache = async (hostname: string): Promise<string[]> => {
-  const cached = dnsLookupCache.get(hostname);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.addresses;
-  }
-
-  const resolvedAddresses = await lookup(hostname, { all: true, verbatim: true });
-  const uniqueAddresses = [...new Set(resolvedAddresses.map(x => x.address))];
-  dnsLookupCache.set(hostname, {
-    addresses: uniqueAddresses,
-    expiresAt: Date.now() + DNS_CACHE_TTL_MS,
-  });
-  return uniqueAddresses;
-};
-
-const assertSafeTargetUrl = async (urlString: string): Promise<void> => {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(urlString);
-  } catch {
-    throw new InsecureConnectionError(urlString, 'URL is invalid');
-  }
-
-  if (!isHttpProtocol(parsedUrl.protocol)) {
-    throw new InsecureConnectionError(urlString, `unsupported protocol "${parsedUrl.protocol}"`);
-  }
-
-  if (ALLOW_LOCAL_WEBHOOKS) {
-    return;
-  }
-
-  const hostname = normalizeHostname(parsedUrl.hostname);
-  if (!hostname) {
-    throw new InsecureConnectionError(urlString, 'hostname is missing');
-  }
-
-  if (isLocalHostname(hostname)) {
-    throw new InsecureConnectionError(urlString, 'localhost targets are not allowed');
-  }
-
-  if (IPAddr.isValid(hostname)) {
-    if (isIPPrivate(hostname)) {
-      throw new InsecureConnectionError(urlString, `private IP "${hostname}" is not allowed`);
-    }
-    return;
-  }
-
-  let resolvedAddresses: string[];
-  try {
-    resolvedAddresses = await lookupWithCache(hostname);
-  } catch {
-    throw new InsecureConnectionError(
-      urlString,
-      `DNS lookup failed for "${hostname}", cannot verify target is safe`,
-    );
-  }
-
-  if (resolvedAddresses.length === 0) {
-    throw new InsecureConnectionError(
-      urlString,
-      `hostname "${hostname}" did not resolve to any IP address`,
-    );
-  }
-
-  if (resolvedAddresses.some(address => isIPPrivate(address))) {
-    throw new InsecureConnectionError(urlString, `hostname "${hostname}" resolves to a private IP`);
-  }
-};
+const secureEgressProxy = new SecureEgressProxy();
+let secureProxyEndpoint: string;
 
 type ContextSecurityState = {
-  blockedNavigationRequestUrl: string | null;
+  blockedNavigation: boolean;
 };
 class Semaphore {
   private permits: number;
@@ -183,9 +100,12 @@ interface UrlModel {
 let browser: Browser;
 
 const initializeBrowser = async () => {
+  secureProxyEndpoint = await secureEgressProxy.start();
   browser = await chromium.launch({
     headless: true,
+    proxy: browserProxy(secureProxyEndpoint),
     args: [
+      ...chromiumSecurityArguments(secureProxyEndpoint),
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
@@ -200,30 +120,16 @@ const initializeBrowser = async () => {
 const createContext = async (skipTlsVerification: boolean = false, userAgentOverride?: string): Promise<{ context: BrowserContext; securityState: ContextSecurityState }> => {
   const userAgent = userAgentOverride || new UserAgent().toString();
   const viewport = { width: 1280, height: 800 };
-  const securityState: ContextSecurityState = {
-    blockedNavigationRequestUrl: null,
-  };
+  const securityState: ContextSecurityState = { blockedNavigation: false };
+  const navigationPolicy = new NavigationPolicy();
 
-  const contextOptions: any = {
+  const newContext = await browser.newContext({
     userAgent,
     viewport,
     ignoreHTTPSErrors: skipTlsVerification,
     serviceWorkers: 'block',
-  };
-
-  if (PROXY_SERVER && PROXY_USERNAME && PROXY_PASSWORD) {
-    contextOptions.proxy = {
-      server: PROXY_SERVER,
-      username: PROXY_USERNAME,
-      password: PROXY_PASSWORD,
-    };
-  } else if (PROXY_SERVER) {
-    contextOptions.proxy = {
-      server: PROXY_SERVER,
-    };
-  }
-
-  const newContext = await browser.newContext(contextOptions);
+    proxy: browserProxy(secureProxyEndpoint),
+  });
 
   if (BLOCK_MEDIA) {
     await newContext.route('**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}', async (route: Route, request: PlaywrightRequest) => {
@@ -235,13 +141,12 @@ const createContext = async (skipTlsVerification: boolean = false, userAgentOver
   await newContext.route('**/*', async (route: Route, request: PlaywrightRequest) => {
     const requestUrlString = request.url();
     try {
-      await assertSafeTargetUrl(requestUrlString);
+      parseSafeDestination(requestUrlString);
+      navigationPolicy.observe(request);
     } catch (error) {
       if (error instanceof InsecureConnectionError) {
-        if (request.isNavigationRequest()) {
-          securityState.blockedNavigationRequestUrl = requestUrlString;
-        }
-        console.warn(`Blocked request: ${requestUrlString}`);
+        if (request.isNavigationRequest()) securityState.blockedNavigation = true;
+        console.warn(`Blocked request by destination policy (${error.code}).`);
         return route.abort('blockedbyclient');
       }
       throw error;
@@ -261,9 +166,8 @@ const createContext = async (skipTlsVerification: boolean = false, userAgentOver
 };
 
 const shutdownBrowser = async () => {
-  if (browser) {
-    await browser.close();
-  }
+  if (browser) await browser.close();
+  await secureEgressProxy.close();
 };
 
 const isValidUrl = (urlString: string): boolean => {
@@ -289,11 +193,8 @@ const scrapePage = async (
   try {
     response = await page.goto(url, { waitUntil, timeout });
   } catch (error) {
-    if (securityState.blockedNavigationRequestUrl) {
-      throw new InsecureConnectionError(
-        securityState.blockedNavigationRequestUrl,
-        'navigation to private/internal resource is not allowed',
-      );
+    if (securityState.blockedNavigation) {
+      throw new InsecureConnectionError('unsafe_navigation');
     }
     throw error;
   }
@@ -374,7 +275,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
   }
 
   try {
-    await assertSafeTargetUrl(url);
+    parseSafeDestination(url);
   } catch (error) {
     if (error instanceof InsecureConnectionError) {
       return res.json({
@@ -384,10 +285,6 @@ app.post('/scrape', async (req: Request, res: Response) => {
       });
     }
     throw error;
-  }
-
-  if (!PROXY_SERVER) {
-    console.warn('⚠️ WARNING: No proxy server provided. Your IP address may be blocked.');
   }
 
   if (!browser) {

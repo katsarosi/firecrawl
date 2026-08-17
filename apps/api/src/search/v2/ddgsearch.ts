@@ -3,7 +3,10 @@ import { config } from "../../config";
 import { JSDOM } from "jsdom";
 import { SearchV2Response, WebSearchResult } from "../../lib/entities";
 import { logger } from "../../lib/logger";
-import { getSecureDispatcher } from "../../scraper/scrapeURL/engines/utils/safeFetch";
+import {
+  getSecureDispatcher,
+  secureFetch,
+} from "../../scraper/scrapeURL/engines/utils/safeFetch";
 
 class DDGAntiBotError extends Error {
   constructor() {
@@ -146,11 +149,10 @@ export async function ddgSearch(
         let response: undici.Response;
 
         if (isFirstPage) {
-          response = await undici.fetch(
+          response = await secureFetch(
             `https://html.duckduckgo.com/html?${params.toString()}`,
             {
               dispatcher: getSecureDispatcher(false),
-              redirect: "follow",
               headers: {
                 "User-Agent": userAgent,
                 Accept:
@@ -163,11 +165,10 @@ export async function ddgSearch(
             },
           );
         } else {
-          response = await undici.fetch(`https://html.duckduckgo.com/html`, {
+          response = await secureFetch(`https://html.duckduckgo.com/html`, {
             method: "POST",
             body: nextPageData.toString(),
             dispatcher: getSecureDispatcher(false),
-            redirect: "follow",
             headers: {
               "User-Agent": userAgent,
               Accept:

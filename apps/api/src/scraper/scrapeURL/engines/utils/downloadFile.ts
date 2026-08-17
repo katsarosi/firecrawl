@@ -13,7 +13,7 @@ import { Writable } from "stream";
 import { TransformStream as NodeTransformStream } from "node:stream/web";
 import { v7 as uuid } from "uuid";
 import * as undici from "undici";
-import { getSecureDispatcher } from "./safeFetch";
+import { getSecureDispatcher, secureFetch } from "./safeFetch";
 import { logger } from "../../../../lib/logger";
 
 const mapUndiciError = (url: string, skipTlsVerification: boolean, e: any) => {
@@ -91,9 +91,8 @@ export async function fetchFileToBuffer(
   buffer: Buffer;
 }> {
   try {
-    const response = await undici.fetch(url, {
+    const response = await secureFetch(url, {
       ...init,
-      redirect: "follow",
       dispatcher: getSecureDispatcher(skipTlsVerification),
     });
     if (maxSize !== undefined) {
@@ -144,9 +143,8 @@ export async function downloadFile(
 
   // TODO: maybe we could use tlsclient for this? for proxying
   try {
-    const response = await undici.fetch(url, {
+    const response = await secureFetch(url, {
       ...init,
-      redirect: "follow",
       dispatcher: getSecureDispatcher(skipTlsVerification),
     });
 

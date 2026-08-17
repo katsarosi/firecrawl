@@ -5,6 +5,7 @@ import { SSLError } from "../../error";
 import { specialtyScrapeCheck } from "../utils/specialtyHandler";
 import {
   getSecureDispatcher,
+  secureFetch,
   InsecureConnectionError,
 } from "../utils/safeFetch";
 import { MockState, saveMock } from "../../lib/mock";
@@ -153,9 +154,8 @@ export async function scrapeURLWithFetch(
     };
   } else {
     try {
-      const x = await undici.fetch(meta.rewrittenUrl ?? meta.url, {
+      const x = await secureFetch(meta.rewrittenUrl ?? meta.url, {
         dispatcher: getSecureDispatcher(meta.options.skipTlsVerification),
-        redirect: "follow",
         headers: meta.options.headers,
         signal: meta.abort.asSignal(),
       });
