@@ -124,5 +124,6 @@
 /apps/api/src/lib/validateUrl.ts @katsarosi
 /apps/api/src/search/v2/ddgsearch.ts @katsarosi
 /apps/playwright-service-ts/ @katsarosi
+/apps/nuq-postgres/ @katsarosi
 /.github/workflows/swallow-* @katsarosi
 /SWALLOW_SECURITY_FORK.md @katsarosi
