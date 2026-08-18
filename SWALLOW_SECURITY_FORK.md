@@ -59,13 +59,13 @@ Required repository settings:
 
 1. Protect `secure/swallow-v2.11.0-r1` and future `secure/*` branches; disallow force pushes and deletion.
 2. Require pull requests, one approving review from `@katsarosi`, dismissal of stale approvals, conversation resolution, and the `swallow-security` check.
-3. Require CODEOWNER review for `apps/api/src/scraper/**`, `apps/playwright-service-ts/**`, `.github/workflows/**`, and this document.
+3. Require CODEOWNER review for `apps/api/src/scraper/**`, `apps/playwright-service-ts/**`, `apps/nuq-postgres/**`, `.github/workflows/**`, and this document.
 4. Disable auto-merge for security/update PRs. Limit workflow write permissions to the update and manual release workflows.
 5. Protect the `release` environment with required reviewer `@katsarosi`; do not allow administrators to bypass it.
 6. Keep package visibility private until explicitly approved, and retain prior digest-pinned packages for rollback.
 
 A human reviews upstream network topology, the patch diff, test results, API compatibility, and image inputs before merge. Passing CI is necessary but never approval. Failed/conflicting updates leave the last approved image untouched.
 
-The manual release workflow may run only for an approved secure-branch commit. It publishes versioned API and Playwright images under `ghcr.io/katsarosi/`, emits immutable digests and provenance, and never deploys them. Task 14B must copy reviewed digests explicitly.
+The manual release workflow may run only for an approved secure-branch commit. It publishes versioned API, Playwright, and NuQ PostgreSQL images under `ghcr.io/katsarosi/`, emits immutable digests and provenance, and never deploys them. NuQ PostgreSQL is the release topology's queue database and includes the required initialization SQL and `pg_cron`; ordinary PostgreSQL is not a compatible substitute. Task 14B must copy reviewed digests explicitly.
 
 Rollback means restoring Task 14B's previous digests; tags are never the deployment authority. If upstream ships equivalent fixes, compare implementation and regression tests, remove each custom patch only after human review verifies equal or stronger connection-time behavior, and retain the Swallow security suite as the acceptance gate.
